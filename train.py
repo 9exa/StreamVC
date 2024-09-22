@@ -2,6 +2,8 @@ import argparse
 import os
 import time
 from itertools import islice
+from tqdm import tqdm
+import re
 
 import einops
 import safetensors as st
@@ -153,7 +155,13 @@ def get_lr_Scheduler(optimizer, args, discriminator=False):
         raise ValueError(f"Unknown scheduler: {args.scheduler}")
 
 
-def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, args: argparse.Namespace) -> nn.Module:
+def train_content_encoder(
+    content_encoder: nn.Module, 
+    hubert_model: nn.Module, 
+    args: argparse.Namespace,
+    starting_epoch: int = 0,
+    starting_step: int = 0, 
+) -> nn.Module:
     """
     Train a content encoder as a classifier to predict the same labels as a discrete hubert model.
 
@@ -163,6 +171,12 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
     :param num_epochs: Number of epochs.
     :return: The trained content encoder wrapped with a linear layer for classification.
     """
+    mem_limit = os.getenv('PYTORCH_LIMIT_PROCESS_MEM', None)
+    if mem_limit != None:
+        mem_limit = float(mem_limit)
+        print("setting cuda memory limit ", mem_limit)
+        torch.cuda.memory.set_per_process_memory_fraction(mem_limit)
+
     # TODO: add epochs or number of steps when we know how much time it takes to train the model.
     wrapped_content_encoder = EncoderClassifier(
         content_encoder, EMBEDDING_DIMS, NUM_CLASSES, dropout=args.encoder_dropout).train()
@@ -207,10 +221,11 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
     # TODO: distributed inference with the hubert model
     hubert_model.to(accelerator.device)
     costs = []
-    global_step = 0
+    global_step = starting_step
+    global_epoch = starting_epoch
     for epoch in range(0, args.num_epochs):
         print_time(f"epoch num: {epoch}")
-        for step, (batch, mask) in enumerate(islice(dataloader, args.limit_num_batches)):
+        for step, (batch, mask) in tqdm(enumerate(islice(dataloader, args.limit_num_batches))):
             labels = get_batch_labels(hubert_model, batch, mask)
             with accelerator.accumulate(wrapped_content_encoder):
                 outputs = wrapped_content_encoder(batch)
@@ -239,7 +254,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
             # print loss
             if (global_step + 1) % args.log_interval == 0:
                 print_time(
-                    f'[{epoch}, {step:5}] loss: {torch.tensor(costs).mean().item():.4}')
+                    f'[{global_epoch}, {global_step:5}] loss: {torch.tensor(costs).mean().item():.4}')
                 costs = []
 
             if args.log_labels_interval and (global_step + 1) % args.log_labels_interval == 0:
@@ -251,7 +266,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                     wrapped_content_encoder,
                     save_directory=os.path.join(
                         args.checkpoint_path,
-                        f"{args.run_name}_content_encoder_{epoch}_{step}"
+                        f"{args.run_name}_content_encoder_{global_epoch}_{global_step}"
                     ))
 
             if (global_step + 1) % args.accuracy_interval == 0:
@@ -272,6 +287,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                 torch.cuda.reset_peak_memory_stats()
 
             global_step += 1
+        global_epoch += 1
 
 
 @torch.no_grad()
@@ -300,6 +316,8 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
        :param streamvc_model: The model to train.
        :param args: Hyperparameters for training.
        """
+    mem_limit = os.getenv('PYTORCH_LIMIT_PROCESS_MEM', None)
+
     #######################
     # Load PyTorch Models #
     #######################
@@ -512,18 +530,34 @@ def main(args):
 
     print_time(f"{hps=}")
 
+    ## Load Models With Checkpoints
+    latest_encoder_step = -1
+    latest_encoder_epoch = -1
+
+    encoder_pattern = r"streamvc_content_encoder_(\d+)_(\d+)"
+    for dirname in os.listdir(args.checkpoint_path):
+        re_match = re.search(encoder_pattern, dirname)
+        if not re_match:
+            continue
+        epoch = int(re_match.group(1))
+        step = int(re_match.group(2))
+        if epoch < latest_encoder_epoch or (epoch == latest_encoder_epoch and step < latest_encoder_step):
+            continue
+        latest_encoder_epoch = epoch
+        latest_encoder_step = step
+
     accelerator.init_trackers(args.run_name, config=hps)
     streamvc = StreamVC(
         gradient_checkpointing=args.gradient_checkpointing)
-    if args.module_to_train in ["content-encoder", "all"]:
-        content_encoder = streamvc.content_encoder
-        hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete",
-                                      trust_repo=True).to(torch.float32).eval()
-        train_content_encoder(
-            content_encoder, hubert_model, args)
-    else:
+
+    if latest_encoder_epoch != -1:
+        encoder_checkpoint = "{}/streamvc_content_encoder_{}_{}/model.safetensors".format(
+            args.checkpoint_path,
+            latest_encoder_epoch,
+            latest_encoder_step
+        )
         wrapped_encoder_state_dict = st.torch.load_file(
-            args.content_encoder_checkpoint)
+            encoder_checkpoint)
         encoder_state_dict = {
             key[len("encoder."):]: value
             for key, value in wrapped_encoder_state_dict.items()
@@ -531,6 +565,16 @@ def main(args):
         }
         streamvc.content_encoder.load_state_dict(encoder_state_dict)
 
+        print("Loaded checkpoint from: ", encoder_checkpoint)
+    else:
+        latest_encoder_epoch = 0
+        latest_encoder_step = 0
+    if args.module_to_train in ["content-encoder", "all"]:
+        content_encoder = streamvc.content_encoder
+        hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete",
+                                      trust_repo=True).to(torch.float32).eval()
+        train_content_encoder(
+            content_encoder, hubert_model, argsstarting_epoch=latest_encoder_epoch, starting_step=latest_encoder_step)    
     if args.module_to_train in ["decoder-and-speaker", "all"]:
         train_streamvc(streamvc, args)
 

@@ -21,6 +21,7 @@ def get_libritts_dataloader(split,  batch_size, num_workers=0, limit_samples=Non
     :param select: A function to select the rows to load.
     :return: A pytorch dataloader for the LibriTTS dataset.
     """
+    print("streaming: ", streaming, "split ", split)
     dataset = load_dataset(DATASET_PATH, "all",
                            split=split, streaming=streaming)
     dataset = dataset.select_columns('audio')
