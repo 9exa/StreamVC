@@ -22,10 +22,12 @@ class EnergyEstimator(nn.Module):
         tensor = tensor[..., :tensor.shape[-1] //
                         self.samples_per_frame * self.samples_per_frame]
         # Reshape the tensor.
-        original_shape = tensor.size()
-        new_shape = (*original_shape[:-1], original_shape[-1] //
-                     self.samples_per_frame, self.samples_per_frame)
-        return tensor.view(*new_shape)
+        original_shape = torch.tensor(tensor.size())
+        new_shape = torch.zeros(len(original_shape) + 1, dtype=torch.int32)
+        new_shape[:-2] = original_shape[:-1]
+        new_shape[-2] = original_shape[-1] // self.samples_per_frame
+        new_shape[-1] = self.samples_per_frame
+        return tensor.view(torch.Size(new_shape))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         reshaped_tensor = self.reshape_to_frames(x)

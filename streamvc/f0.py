@@ -1,17 +1,17 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Iterable
+from typing import List, Optional
 import numpy as np
 
 
 def estimate(
     signal: torch.Tensor,
-    sample_rate: float,
+    sample_rate: int,
     frame_length: int,
     frame_stride: int,
+    thresholds: List[float],
     pitch_max: float = 20000,
-    thresholds: Iterable[float] = (0.05, 0.1, 0.15),
     whitening: bool = True
 ) -> torch.Tensor:
     """Estimates the pitch (fundamental frequency) of a signal.
@@ -86,7 +86,8 @@ def _frame(signal: torch.Tensor, frame_length: int, frame_stride: int) -> torch.
 
 def _diff(frames: torch.Tensor, tau_max: int) -> torch.Tensor:
     # compute the frame-wise autocorrelation using the FFT
-    fft_size = 2 ** (-int(-np.log(frames.shape[-1]) // np.log(2)) + 1)
+    # fft_size = 2 ** (-int(-torch.log(frames.shape[-1]) // torch.log(2)) + 1) but as an int
+    fft_size = 1 << (-int(-torch.log(frames.shape[-1]) // torch.log(2)) + 1)
     fft = torch.fft.rfft(frames, fft_size, dim=-1)
     corr = torch.fft.irfft(fft * fft.conj())[..., :tau_max]
 
@@ -117,7 +118,7 @@ def _search(cmdf: torch.Tensor, tau_max: int, threshold: float) -> torch.Tensor:
 
     # mask all periods with upward sloping cmdf to find the local minimum
     increasing_slope = torch.nn.functional.pad(
-        cmdf.diff() >= 0.0, [0, 1], value=1)
+        cmdf.diff() >= 0.0, [0, 1], value=1.0)
 
     # find the first period satisfying both constraints
     return (beyond_threshold & increasing_slope).int().argmax(-1)
@@ -125,17 +126,17 @@ def _search(cmdf: torch.Tensor, tau_max: int, threshold: float) -> torch.Tensor:
 
 class F0Estimator(nn.Module):
     def __init__(self, sample_rate: int = 16_000, frame_length_ms: int = 20,
-                 yin_thresholds: Iterable[float] = (0.05, 0.1, 0.15), whitening: bool = True):
+                 yin_thresholds: Optional[List[float]] = None, whitening: bool = True):
         super().__init__()
         self.sample_rate = sample_rate
         self.samples_per_frame = int(
             self.sample_rate // (1 / frame_length_ms * 1000))
-        self.yin_thresholds = yin_thresholds
+        self.yin_thresholds = yin_thresholds if yin_thresholds != None else [0.05, 0.1, 0.15]
         self.whitening = whitening
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.pad(x, (self.samples_per_frame,
-                  self.samples_per_frame), "constant", 0)
+                  self.samples_per_frame), "constant", 0.0)
         f0 = estimate(x, self.sample_rate, frame_length=self.samples_per_frame * 3, frame_stride=self.samples_per_frame,
                       thresholds=self.yin_thresholds, whitening=self.whitening,
                       )

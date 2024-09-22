@@ -4,6 +4,8 @@ from torch.utils.checkpoint import checkpoint
 from einops.layers.torch import Rearrange
 from streamvc.modules import CausalConv1d, CausalConvTranspose1d, FiLM
 
+from typing import List
+
 
 class Encoder(nn.Module):
     def __init__(self, scale: int, embedding_dim: int, gradient_checkpointing: bool = False):
@@ -35,36 +37,40 @@ class Decoder(nn.Module):
 
         # Need to manually interleave FiLM layers with the decoder blocks
         # because nn.Sequential does not support conditional execution
-        self.decoder = SequentialWithFiLM(
+        blocks = [
+            DecoderBlock(16*scale, 8*scale, stride=8,
+                         gradient_checkpointing=gradient_checkpointing),
+            DecoderBlock(8*scale, 4*scale, stride=5,
+                         gradient_checkpointing=gradient_checkpointing),
+            DecoderBlock(4*scale, 2*scale, stride=4,
+                         gradient_checkpointing=gradient_checkpointing),
+            DecoderBlock(2*scale, scale, stride=2,
+                         gradient_checkpointing=gradient_checkpointing)
+        ]
+        films = [
+            FiLM(8*scale, conditioning_dim),
+            FiLM(4*scale, conditioning_dim),
+            FiLM(2*scale, conditioning_dim),
+            FiLM(scale, conditioning_dim)
+        ]
+
+        self.decoder_blocks = DecoderBlocks(blocks, films)
+
+        self.preblocks = nn.Sequential(
             Rearrange('... frames embedding -> ... embedding frames'),
             CausalConv1d(embedding_dim, 16*scale, kernel_size=7),
-            nn.ELU(),
-            SingleThenConditional(
-                DecoderBlock(16*scale, 8*scale, stride=8,
-                            gradient_checkpointing=gradient_checkpointing),
-                FiLM(8*scale, conditioning_dim),
-            ),
-            SingleThenConditional(
-                DecoderBlock(8*scale, 4*scale, stride=5,
-                            gradient_checkpointing=gradient_checkpointing),
-                FiLM(4*scale, conditioning_dim)
-            ),
-            SingleThenConditional( 
-                DecoderBlock(4*scale, 2*scale, stride=4,
-                            gradient_checkpointing=gradient_checkpointing),
-                FiLM(2*scale, conditioning_dim),
-            ),
-            SingleThenConditional(
-                DecoderBlock(2*scale, scale, stride=2,
-                            gradient_checkpointing=gradient_checkpointing),
-                FiLM(scale, conditioning_dim),
-            ),
+            nn.ELU()
+        )
+
+        self.postblocks = nn.Sequential(
             CausalConv1d(scale, 1, kernel_size=7),
             Rearrange('... 1 samples -> ... samples')
         )
 
     def forward(self, x: torch.Tensor, condition: torch.Tensor):
-        return self.decoder(x, condition)
+        x = self.preblocks(x)
+        x = self.decoder_blocks(x, condition)
+        return self.postblocks(x)
 
 class SingleThenConditional(nn.Module):
     def __init__(self, single_module: nn.Module, conditional_module: nn.Module):
@@ -73,6 +79,7 @@ class SingleThenConditional(nn.Module):
         self.conditional_module = conditional_module
     def forward(self, x: torch.Tensor, condition: torch.Tensor):
         return self.conditional_module(self.single_module(x), condition)
+    
 
 class EncoderBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, stride: int,
@@ -130,6 +137,17 @@ class DecoderBlock(nn.Sequential):
         else:
             return self.block(x)
 
+class DecoderBlocks(nn.Module):
+    def __init__(self, blocks: List[DecoderBlock], films: List[FiLM]):
+        assert len(blocks) == len(films)
+        super().__init__()
+        self.blocks = blocks
+        self.films = films
+    
+    def forward(self, x: torch.Tensor, condition: torch.Tensor):
+        for block, film in zip(self.blocks, self.films):
+            x = film(block(x), condition)
+        return x
 
 class ResidualUnit(nn.Module):
     def __init__(self, channels: int, dilation: int, kernel_size: int = 7, gradient_checkpointing=False, **kwargs):

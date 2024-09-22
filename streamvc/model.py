@@ -19,7 +19,7 @@ class StreamVC(nn.Module):
         self.decoder = Decoder(scale=40, embedding_dim=74, conditioning_dim=64,
                                gradient_checkpointing=gradient_checkpointing)
         self.f0_estimator = F0Estimator(sample_rate=sample_rate, frame_length_ms=20,
-                                        yin_thresholds=(0.05, 0.1, 1.5), whitening=True)
+                                        yin_thresholds=[0.05, 0.1, 1.5], whitening=True)
         self.energy_estimator = EnergyEstimator(
             sample_rate=sample_rate, frame_length_ms=20)
 
