@@ -87,7 +87,9 @@ def _frame(signal: torch.Tensor, frame_length: int, frame_stride: int) -> torch.
 def _diff(frames: torch.Tensor, tau_max: int) -> torch.Tensor:
     # compute the frame-wise autocorrelation using the FFT
     # fft_size = 2 ** (-int(-torch.log(frames.shape[-1]) // torch.log(2)) + 1) but as an int
-    fft_size = 1 << (-int(-torch.log(frames.shape[-1]) // torch.log(2)) + 1)
+    fft_size = 1 << (-int(-torch.log(torch.tensor(frames.shape[-1])) 
+        // torch.log(torch.tensor(2))) 
+        + 1)
     fft = torch.fft.rfft(frames, fft_size, dim=-1)
     corr = torch.fft.irfft(fft * fft.conj())[..., :tau_max]
 

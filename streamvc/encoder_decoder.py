@@ -72,14 +72,6 @@ class Decoder(nn.Module):
         x = self.decoder_blocks(x, condition)
         return self.postblocks(x)
 
-class SingleThenConditional(nn.Module):
-    def __init__(self, single_module: nn.Module, conditional_module: nn.Module):
-        super().__init__()
-        self.single_module = single_module
-        self.conditional_module = conditional_module
-    def forward(self, x: torch.Tensor, condition: torch.Tensor):
-        return self.conditional_module(self.single_module(x), condition)
-    
 
 class EncoderBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, stride: int,
@@ -141,8 +133,8 @@ class DecoderBlocks(nn.Module):
     def __init__(self, blocks: List[DecoderBlock], films: List[FiLM]):
         assert len(blocks) == len(films)
         super().__init__()
-        self.blocks = blocks
-        self.films = films
+        self.blocks = nn.ModuleList(blocks)
+        self.films = nn.ModuleList(films)
     
     def forward(self, x: torch.Tensor, condition: torch.Tensor):
         for block, film in zip(self.blocks, self.films):

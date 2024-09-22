@@ -96,7 +96,6 @@ class CausalConvTranspose1d(nn.Module):
         assert 'output_padding' not in kwargs
 
         super().__init__()
-
         self.convt = nn.ConvTranspose1d(
             in_channels=in_channels,
             out_channels=out_channels,

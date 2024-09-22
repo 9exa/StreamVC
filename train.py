@@ -1,5 +1,6 @@
 import argparse
 import os
+from pathlib import Path
 import time
 from itertools import islice
 from tqdm import tqdm
@@ -171,12 +172,6 @@ def train_content_encoder(
     :param num_epochs: Number of epochs.
     :return: The trained content encoder wrapped with a linear layer for classification.
     """
-    mem_limit = os.getenv('PYTORCH_LIMIT_PROCESS_MEM', None)
-    if mem_limit != None:
-        mem_limit = float(mem_limit)
-        print("setting cuda memory limit ", mem_limit)
-        torch.cuda.memory.set_per_process_memory_fraction(mem_limit)
-
     # TODO: add epochs or number of steps when we know how much time it takes to train the model.
     wrapped_content_encoder = EncoderClassifier(
         content_encoder, EMBEDDING_DIMS, NUM_CLASSES, dropout=args.encoder_dropout).train()
@@ -535,6 +530,8 @@ def main(args):
     latest_encoder_epoch = -1
 
     encoder_pattern = r"streamvc_content_encoder_(\d+)_(\d+)"
+    
+    Path(args.checkpoint_path).mkdir(parents=True, exist_ok=True)
     for dirname in os.listdir(args.checkpoint_path):
         re_match = re.search(encoder_pattern, dirname)
         if not re_match:
@@ -574,7 +571,7 @@ def main(args):
         hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete",
                                       trust_repo=True).to(torch.float32).eval()
         train_content_encoder(
-            content_encoder, hubert_model, argsstarting_epoch=latest_encoder_epoch, starting_step=latest_encoder_step)    
+            content_encoder, hubert_model, args, starting_epoch=latest_encoder_epoch, starting_step=latest_encoder_step)    
     if args.module_to_train in ["decoder-and-speaker", "all"]:
         train_streamvc(streamvc, args)
 
