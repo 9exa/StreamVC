@@ -20,14 +20,15 @@ class LearnablePooling(nn.Module):
         return torch.einsum('b f e, b f -> b e', x, weights)
 
 
-class CausalConv1d(nn.Conv1d):
+class CausalConv1d(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int,
                  stride: int = 1, dilation: int = 1,
                  padding_mode: str = 'zeros', **kwargs):
 
         assert 'padding' not in kwargs
 
-        super().__init__(
+        super().__init__()
+        self.conv = nn.Conv1d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
@@ -60,7 +61,7 @@ class CausalConv1d(nn.Conv1d):
         if self.streaming_mode:
             return self.streaming_forward(x)
 
-        return super().forward(self._pad(x))
+        return self.conv.forward(self._pad(x))
 
     def init_streaming_buffer(self):
         self.streaming_buffer = torch.zeros(
@@ -84,17 +85,19 @@ class CausalConv1d(nn.Conv1d):
         ready_input = full_input[..., :num_elements_for_forward]
         new_buffer_size = num_samples - num_strides * self.stride
         self.streaming_buffer = full_input[..., -new_buffer_size:]
-        return super().forward(ready_input)
+        return self.conv.forward(ready_input)
 
 
-class CausalConvTranspose1d(nn.ConvTranspose1d):
+class CausalConvTranspose1d(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int,
                  stride: int = 1, dilation=1, **kwargs):
 
         assert 'padding' not in kwargs
         assert 'output_padding' not in kwargs
 
-        super().__init__(
+        super().__init__()
+
+        self.convt = nn.ConvTranspose1d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
@@ -105,17 +108,18 @@ class CausalConvTranspose1d(nn.ConvTranspose1d):
             **kwargs
         )
 
-        causal_trim = max(0, dilation * (kernel_size - 1) - (stride - 1))
-
-        # we trim the output on the right side
-        # see https://github.com/lucidrains/audiolm-pytorch/issues/8
-        if causal_trim > 0:
-            self.trim = lambda x: x[..., :-causal_trim]
+        self.causal_trim: int = max(0, dilation * (kernel_size - 1) - (stride - 1))
+        
+    # we trim the output on the right side
+    # see https://github.com/lucidrains/audiolm-pytorch/issues/8
+    def trim(self, x):
+        if self.causal_trim > 0:
+            return x[..., :-self.causal_trim]
         else:
-            self.trim = lambda x: x
+            return x
 
     def forward(self, x: torch.Tensor):
-        out = super().forward(x)
+        out = self.convt.forward(x)
         return self.trim(out)
 
 

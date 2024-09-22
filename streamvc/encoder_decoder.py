@@ -32,22 +32,33 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, scale: int, embedding_dim: int, conditioning_dim: int, gradient_checkpointing: bool = False):
         super().__init__()
+
+        # Need to manually interleave FiLM layers with the decoder blocks
+        # because nn.Sequential does not support conditional execution
         self.decoder = SequentialWithFiLM(
             Rearrange('... frames embedding -> ... embedding frames'),
             CausalConv1d(embedding_dim, 16*scale, kernel_size=7),
             nn.ELU(),
-            DecoderBlock(16*scale, 8*scale, stride=8,
-                         gradient_checkpointing=gradient_checkpointing),
-            FiLM(8*scale, conditioning_dim),
-            DecoderBlock(8*scale, 4*scale, stride=5,
-                         gradient_checkpointing=gradient_checkpointing),
-            FiLM(4*scale, conditioning_dim),
-            DecoderBlock(4*scale, 2*scale, stride=4,
-                         gradient_checkpointing=gradient_checkpointing),
-            FiLM(2*scale, conditioning_dim),
-            DecoderBlock(2*scale, scale, stride=2,
-                         gradient_checkpointing=gradient_checkpointing),
-            FiLM(scale, conditioning_dim),
+            SingleThenConditional(
+                DecoderBlock(16*scale, 8*scale, stride=8,
+                            gradient_checkpointing=gradient_checkpointing),
+                FiLM(8*scale, conditioning_dim),
+            ),
+            SingleThenConditional(
+                DecoderBlock(8*scale, 4*scale, stride=5,
+                            gradient_checkpointing=gradient_checkpointing),
+                FiLM(4*scale, conditioning_dim)
+            ),
+            SingleThenConditional( 
+                DecoderBlock(4*scale, 2*scale, stride=4,
+                            gradient_checkpointing=gradient_checkpointing),
+                FiLM(2*scale, conditioning_dim),
+            ),
+            SingleThenConditional(
+                DecoderBlock(2*scale, scale, stride=2,
+                            gradient_checkpointing=gradient_checkpointing),
+                FiLM(scale, conditioning_dim),
+            ),
             CausalConv1d(scale, 1, kernel_size=7),
             Rearrange('... 1 samples -> ... samples')
         )
@@ -55,16 +66,13 @@ class Decoder(nn.Module):
     def forward(self, x: torch.Tensor, condition: torch.Tensor):
         return self.decoder(x, condition)
 
-
-class SequentialWithFiLM(nn.Sequential):
-    def forward(self, input, condition):
-        for module in self:
-            if isinstance(module, FiLM):
-                input = module(input, condition)
-            else:
-                input = module(input)
-        return input
-
+class SingleThenConditional(nn.Module):
+    def __init__(self, single_module: nn.Module, conditional_module: nn.Module):
+        super().__init__()
+        self.single_module = single_module
+        self.conditional_module = conditional_module
+    def forward(self, x: torch.Tensor, condition: torch.Tensor):
+        return self.conditional_module(self.single_module(x), condition)
 
 class EncoderBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, stride: int,
