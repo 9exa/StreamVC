@@ -675,7 +675,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    if args.module_to_train == "decoder-and-speaker":
-        assert args.content_encoder_checkpoint, "content-encoder-checkpoint is required for decoder training"
+    # if args.module_to_train == "decoder-and-speaker":
+    #     assert args.content_encoder_checkpoint, "content-encoder-checkpoint is required for decoder training"
 
     main(args)
