@@ -216,11 +216,12 @@ def train_content_encoder(
     # TODO: distributed inference with the hubert model
     hubert_model.to(accelerator.device)
     costs = []
-    global_step = starting_step
-    global_epoch = starting_epoch
+    global_step = 0
     for epoch in range(0, args.num_epochs):
+        epoch += starting_epoch
         print_time(f"epoch num: {epoch}")
         for step, (batch, mask) in tqdm(enumerate(islice(dataloader, args.limit_num_batches))):
+            step += starting_step
             labels = get_batch_labels(hubert_model, batch, mask)
             with accelerator.accumulate(wrapped_content_encoder):
                 outputs = wrapped_content_encoder(batch)
@@ -249,7 +250,7 @@ def train_content_encoder(
             # print loss
             if (global_step + 1) % args.log_interval == 0:
                 print_time(
-                    f'[{global_epoch}, {global_step:5}] loss: {torch.tensor(costs).mean().item():.4}')
+                    f'[{epoch}, {global_step:5}] loss: {torch.tensor(costs).mean().item():.4}')
                 costs = []
 
             if args.log_labels_interval and (global_step + 1) % args.log_labels_interval == 0:
@@ -261,7 +262,7 @@ def train_content_encoder(
                     wrapped_content_encoder,
                     save_directory=os.path.join(
                         args.checkpoint_path,
-                        f"{args.run_name}_content_encoder_{global_epoch}_{global_step}"
+                        f"{args.run_name}_content_encoder_{epoch}_{step}"
                     ))
 
             if (global_step + 1) % args.accuracy_interval == 0:
@@ -282,7 +283,7 @@ def train_content_encoder(
                 torch.cuda.reset_peak_memory_stats()
 
             global_step += 1
-        global_epoch += 1
+        starting_step = 0
 
 
 @torch.no_grad()
@@ -304,7 +305,13 @@ def compute_content_encoder_accuracy(dataloader, wrapped_content_encoder: nn.Mod
     return 100 * correct / total
 
 
-def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
+def train_streamvc(
+    streamvc_model: StreamVC, 
+    discriminator: Discriminator, 
+    args: argparse.Namespace,
+    starting_epoch: int = 0,
+    starting_step: int = 0,
+) -> None:
     """
        Trains a StreamVC model.
 
@@ -317,8 +324,7 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     # Load PyTorch Models #
     #######################
     generator = streamvc_model
-    discriminator = Discriminator(
-        gradient_checkpointing=args.gradient_checkpointing)
+    
 
     for param in generator.content_encoder.parameters():
         param.requires_grad = False
@@ -386,10 +392,12 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     )
 
     costs = []
-    global_step = 0
+    global_step = 0 
     for epoch in range(0, args.num_epochs):
+        epoch += starting_epoch
         print_time(f"epoch num: {epoch}")
         for step, (batch, mask) in enumerate(islice(dataloader, args.limit_num_batches)):
+            step += starting_step
             x_pred_t = generator(batch, batch)
             # Remove the first 2 frames from the generated audio
             # because we match a output frame t with input frame t-2.
@@ -496,6 +504,7 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                 torch.cuda.reset_peak_memory_stats()
 
             global_step += 1
+        starting_step = 0
 
 
 def main(args):
@@ -524,6 +533,7 @@ def main(args):
         del hps[key]
 
     print_time(f"{hps=}")
+    print_time(f"module-to-train: {args.module_to_train}")
 
     ## Load Models With Checkpoints
     latest_encoder_step = -1
@@ -570,10 +580,70 @@ def main(args):
         content_encoder = streamvc.content_encoder
         hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete",
                                       trust_repo=True).to(torch.float32).eval()
+        print_time(f"Training encoder. Starting step: {latest_encoder_step}")
+
+        starting_step = latest_encoder_step + 1
+        starting_epoch = max(0, latest_encoder_epoch)
+
         train_content_encoder(
-            content_encoder, hubert_model, args, starting_epoch=latest_encoder_epoch, starting_step=latest_encoder_step)    
+            content_encoder, hubert_model, args, starting_epoch=starting_epoch, starting_step=starting_step)    
+    
+    latest_discriminator_step = -1
+    latest_discriminator_epoch = -1
+    latest_generator_step = -1
+    latest_generator_epoch = -1
+    discriminator_pattern = r"{}_discriminator_(\d+)_(\d+)".format(args.run_name)
+    generator_pattern = r"{}_generator_(\d+)_(\d+)".format(args.run_name)
+    for dirname in os.listdir(args.checkpoint_path):
+        re_match = re.search(discriminator_pattern, dirname)
+        if re_match:
+            epoch = int(re_match.group(1))
+            step = int(re_match.group(2))
+            if epoch < latest_discriminator_epoch or (epoch == latest_discriminator_epoch and step < latest_discriminator_step):
+                continue
+            latest_discriminator_epoch = epoch
+            latest_discriminator_step = step
+        re_match = re.search(generator_pattern, dirname)
+        if re_match:
+            epoch = int(re_match.group(1))
+            step = int(re_match.group(2))
+            if epoch < latest_generator_epoch or (epoch == latest_generator_epoch and step < latest_generator_step):
+                continue
+            latest_generator_epoch = epoch
+            latest_generator_step = step
+    
     if args.module_to_train in ["decoder-and-speaker", "all"]:
-        train_streamvc(streamvc, args)
+        discriminator = discriminator = Discriminator(
+                gradient_checkpointing=args.gradient_checkpointing)
+        if latest_discriminator_epoch != -1:
+            discriminator_checkpoint = "{}/{}_discriminator_{}_{}/model.safetensors".format(
+                args.checkpoint_path,
+                args.run_name,
+                latest_discriminator_epoch,
+                latest_discriminator_step
+            )
+            print(discriminator_checkpoint)
+            discriminator.load_state_dict(
+                st.torch.load_file(discriminator_checkpoint))
+            print("Loaded checkpoint from: ", discriminator_checkpoint)
+        
+        # only load the previous generator checkpoint if the encoder was not changed
+        if latest_generator_epoch != -1 and args.module_to_train == "decoder-and-speaker":
+            generator_checkpoint = "{}/{}_generator_{}_{}/model.safetensors".format(
+                args.checkpoint_path,
+                args.run_name,
+                latest_generator_epoch,
+                latest_generator_step
+            )
+            streamvc.load_state_dict(
+                st.torch.load_file(generator_checkpoint))
+            print("Loaded checkpoint from: ", generator_checkpoint)
+        
+        starting_step = latest_generator_step + 1
+        starting_epoch = max(latest_generator_epoch, 0)
+
+        print_time(f"Training decoder. Starting step: {starting_step}")
+        train_streamvc(streamvc, discriminator, args, starting_epoch=starting_epoch, starting_step=starting_step)
 
     accelerator.end_training()
 
