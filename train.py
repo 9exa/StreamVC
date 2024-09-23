@@ -529,7 +529,7 @@ def main(args):
     latest_encoder_step = -1
     latest_encoder_epoch = -1
 
-    encoder_pattern = r"streamvc_content_encoder_(\d+)_(\d+)"
+    encoder_pattern = r"{}_content_encoder_(\d+)_(\d+)".format(args.run_name)
     
     Path(args.checkpoint_path).mkdir(parents=True, exist_ok=True)
     for dirname in os.listdir(args.checkpoint_path):
