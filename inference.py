@@ -9,28 +9,28 @@ import torchaudio.functional as F
 from streamvc import StreamVC
 
 SAMPLE_RATE = 16_000
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.float32
 
 
 @torch.no_grad()
 def main(args):
     """Main function for StreamVC model inference."""
-    model = StreamVC().to(device=DEVICE, dtype=DTYPE).eval()
+    model = StreamVC().to(device=args.device, dtype=DTYPE).eval()
 
-    encoder_state_dict = st.torch.load_file(args.checkpoint, device=DEVICE)
+    encoder_state_dict = st.torch.load_file(args.checkpoint, device=args.device)
 
     model.load_state_dict(encoder_state_dict)
 
     source_speech, orig_sr = sf.read(args.source_speech)
     source_speech = torch.from_numpy(
-        source_speech).to(device=DEVICE, dtype=DTYPE)
+        source_speech).to(device=args.device, dtype=DTYPE)
     if orig_sr != SAMPLE_RATE:
         source_speech = F.resample(source_speech, orig_sr, SAMPLE_RATE)
+    print(source_speech.device)
 
     target_speech, orig_sr = sf.read(args.target_speech)
     target_speech = torch.from_numpy(
-        target_speech).to(device=DEVICE, dtype=DTYPE)
+        target_speech).to(device=args.device, dtype=DTYPE)
     if orig_sr != SAMPLE_RATE:
         target_speech = F.resample(target_speech, orig_sr, SAMPLE_RATE)
 
@@ -54,5 +54,8 @@ if __name__ == '__main__':
     parser.add_argument("-o", "--output-path", type=str,
                         default="./out.wav",
                         help="Output file path.")
+    parser.add_argument("-d", "--device", type=str, default="cuda",
+                        choices=["cpu", "cuda"],
+                        help="Device to run the model on.")
 
     main(parser.parse_args())
