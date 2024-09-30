@@ -216,7 +216,7 @@ def train_content_encoder(
     # TODO: distributed inference with the hubert model
     hubert_model.to(accelerator.device)
     costs = []
-    global_step = 0
+    global_step = starting_step
     for epoch in range(0, args.num_epochs):
         epoch += starting_epoch
         print_time(f"epoch num: {epoch}")
@@ -283,7 +283,7 @@ def train_content_encoder(
                 torch.cuda.reset_peak_memory_stats()
 
             global_step += 1
-        starting_step = 0
+        # starting_step = 0
 
 
 @torch.no_grad()
@@ -392,7 +392,7 @@ def train_streamvc(
     )
 
     costs = []
-    global_step = 0 
+    global_step = starting_step
     for epoch in range(0, args.num_epochs):
         epoch += starting_epoch
         print_time(f"epoch num: {epoch}")
@@ -504,7 +504,7 @@ def train_streamvc(
                 torch.cuda.reset_peak_memory_stats()
 
             global_step += 1
-        starting_step = 0
+        # starting_step = 0
 
 
 def main(args):
